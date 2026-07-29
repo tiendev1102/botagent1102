@@ -6,7 +6,6 @@ logger = logging.getLogger(__name__)
 
 # System prompt cho bot
 SYSTEM_PROMPT = """Bạn là "Agent của Tiến", một trợ lý AI trên Telegram. Hãy tuân thủ các quy tắc sau:
-
 1. Xưng hô: Luôn xưng "em", gọi người dùng là "anh".
 2. Phong cách: Cute, thân thiện, nhiệt tình, hỗ trợ tận tình. Dùng emoji phù hợp 😊
 3. Ngôn ngữ: Trả lời bằng tiếng Việt là chính. Nếu anh hỏi bằng ngôn ngữ khác thì trả lời bằng ngôn ngữ đó.
@@ -14,6 +13,14 @@ SYSTEM_PROMPT = """Bạn là "Agent của Tiến", một trợ lý AI trên Tele
 5. Luôn sẵn sàng và vui vẻ khi được nhờ giúp đỡ.
 6. Trả lời ngắn gọn, dễ hiểu, không dài dòng trừ khi được yêu cầu giải thích chi tiết.
 """
+
+# Danh sách model miễn phí trên OpenRouter (thử lần lượt nếu model trước bị rate-limit)
+FREE_MODELS = [
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-nano-30b-a3b:free",
+]
 
 # Lưu lịch sử hội thoại (trong RAM)
 conversation_history = {}
@@ -31,118 +38,100 @@ def add_to_history(chat_id, role, content):
     """Thêm tin nhắn vào lịch sử"""
     history = get_history(chat_id)
     history.append({"role": role, "content": content})
-    # Giới hạn lịch sử
     if len(history) > MAX_HISTORY:
         conversation_history[chat_id] = history[-MAX_HISTORY:]
 
 
 def call_gemini(user_message, chat_id):
-    """Gọi Google Gemini API bằng REST API trực tiếp"""
+    """Gọi Google Gemini API"""
     if not GEMINI_API_KEY:
         return None
 
     try:
         history = get_history(chat_id)
-
-        # Tạo contents cho Gemini API
         contents = []
-
-        # Thêm lịch sử hội thoại
         for msg in history:
             role = "user" if msg["role"] == "user" else "model"
-            contents.append({
-                "role": role,
-                "parts": [{"text": msg["content"]}]
-            })
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        contents.append({"role": "user", "parts": [{"text": user_message}]})
 
-        # Thêm tin nhắn hiện tại
-        contents.append({
-            "role": "user",
-            "parts": [{"text": user_message}]
-        })
-
-        # Gọi Gemini API trực tiếp qua REST
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-
         payload = {
             "contents": contents,
-            "systemInstruction": {
-                "parts": [{"text": SYSTEM_PROMPT}]
-            },
-            "generationConfig": {
-                "maxOutputTokens": 1000,
-                "temperature": 0.8
-            }
+            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "generationConfig": {"maxOutputTokens": 1000, "temperature": 0.8}
         }
 
-        response = requests.post(url, json=payload, timeout=30)
+        response = requests.post(url, json=payload, timeout=10)
 
         if response.status_code == 200:
             data = response.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return text
+            return data["candidates"][0]["content"]["parts"][0]["text"]
         else:
-            logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+            logger.error(f"Gemini error: {response.status_code}")
             return None
-
     except Exception as e:
         logger.error(f"Gemini error: {e}")
         return None
 
 
 def call_openrouter(user_message, chat_id):
-    """Gọi OpenRouter API (miễn phí, dự phòng)"""
+    """Gọi OpenRouter API - thử nhiều model miễn phí"""
     if not OPENROUTER_API_KEY:
         return None
 
-    try:
-        history = get_history(chat_id)
+    history = get_history(chat_id)
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_message})
 
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-        messages.append({"role": "user", "content": user_message})
+    for model in FREE_MODELS:
+        try:
+            logger.info(f"Trying OpenRouter model: {model}")
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": 1000,
+                },
+                timeout=25
+            )
 
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "google/gemma-4-31b-it:free",
-                "messages": messages,
-                "max_tokens": 1000,
-            },
-            timeout=30
-        )
+            if response.status_code == 200:
+                data = response.json()
+                content = data["choices"][0]["message"]["content"]
+                if content:
+                    logger.info(f"OpenRouter success: {model}")
+                    return content
+            else:
+                logger.warning(f"OpenRouter {model} failed: {response.status_code}")
+                continue
+        except Exception as e:
+            logger.error(f"OpenRouter {model} error: {e}")
+            continue
 
-        if response.status_code == 200:
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-        else:
-            logger.error(f"OpenRouter error: {response.status_code} - {response.text}")
-            return None
-
-    except Exception as e:
-        logger.error(f"OpenRouter error: {e}")
-        return None
+    return None
 
 
 def get_ai_response(user_message, chat_id):
-    """Lấy phản hồi AI - thử Gemini trước, nếu lỗi thì dùng OpenRouter"""
-
-    # Thử Gemini trước (nguồn chính)
+    """Lấy phản hồi AI - thử Gemini trước, nếu lỗi thì dùng OpenRouter với nhiều model"""
+    # Thử Gemini trước
     response = call_gemini(user_message, chat_id)
 
-    # Nếu Gemini lỗi, dùng OpenRouter (dự phòng)
+    # Nếu Gemini lỗi, dùng OpenRouter (thử nhiều model)
     if response is None:
         logger.info("Gemini failed, switching to OpenRouter...")
         response = call_openrouter(user_message, chat_id)
 
-    # Nếu cả 2 đều lỗi
+    # Nếu tất cả đều lỗi
     if response is None:
-        response = "Dạ, em xin lỗi anh 😅 Hiện tại cả 2 nguồn AI đều đang gặp trục trặc. Anh thử lại sau vài phút nha! 🙏"
+        response = "Dạ, em xin lỗi anh 😅 Hiện tại tất cả nguồn AI đều đang gặp trục trặc. Anh thử lại sau vài phút nha! 🙏"
 
     # Lưu vào lịch sử
     add_to_history(chat_id, "user", user_message)
