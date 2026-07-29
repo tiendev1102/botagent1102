@@ -1,7 +1,7 @@
 import logging
 import requests as http_requests
 from flask import Flask, request, jsonify
-from config import TELEGRAM_BOT_TOKEN, RENDER_EXTERNAL_URL, PORT
+from config import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, OPENROUTER_API_KEY, RENDER_EXTERNAL_URL, PORT
 from ai_service import get_ai_response
 
 # Logging
@@ -27,7 +27,8 @@ def send_message(chat_id, text):
         "parse_mode": "HTML"
     }
     try:
-        http_requests.post(url, json=payload, timeout=10)
+        resp = http_requests.post(url, json=payload, timeout=10)
+        logger.info(f"send_message status: {resp.status_code}")
     except Exception as e:
         logger.error(f"Send message error: {e}")
 
@@ -129,6 +130,71 @@ def set_webhook():
             return f"❌ Error: {result.get('description', 'Unknown error')}", 500
     except Exception as e:
         return f"❌ Error setting webhook: {e}", 500
+
+
+@flask_app.route("/debug", methods=["GET"])
+def debug():
+    """Debug endpoint - kiểm tra trạng thái các API keys"""
+    results = []
+
+    # Check env vars
+    results.append(f"TELEGRAM_BOT_TOKEN: {'SET (' + TELEGRAM_BOT_TOKEN[:10] + '...)' if TELEGRAM_BOT_TOKEN else 'NOT SET'}")
+    results.append(f"GEMINI_API_KEY: {'SET (' + GEMINI_API_KEY[:8] + '...)' if GEMINI_API_KEY else 'NOT SET'}")
+    results.append(f"OPENROUTER_API_KEY: {'SET (' + OPENROUTER_API_KEY[:10] + '...)' if OPENROUTER_API_KEY else 'NOT SET'}")
+    results.append(f"RENDER_EXTERNAL_URL: {RENDER_EXTERNAL_URL or 'NOT SET'}")
+    results.append("")
+
+    # Test Gemini
+    results.append("--- Testing Gemini API ---")
+    if GEMINI_API_KEY:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+            payload = {"contents": [{"parts": [{"text": "Say hi"}]}]}
+            resp = http_requests.post(url, json=payload, timeout=15)
+            results.append(f"Status: {resp.status_code}")
+            if resp.status_code == 200:
+                data = resp.json()
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                results.append(f"Response: {text[:100]}")
+            else:
+                results.append(f"Error: {resp.text[:300]}")
+        except Exception as e:
+            results.append(f"Exception: {e}")
+    else:
+        results.append("SKIPPED - no key")
+
+    results.append("")
+
+    # Test OpenRouter
+    results.append("--- Testing OpenRouter API ---")
+    if OPENROUTER_API_KEY:
+        try:
+            resp = http_requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "google/gemma-4-31b-it:free",
+                    "messages": [{"role": "user", "content": "Say hi"}],
+                    "max_tokens": 50,
+                },
+                timeout=30
+            )
+            results.append(f"Status: {resp.status_code}")
+            if resp.status_code == 200:
+                data = resp.json()
+                text = data["choices"][0]["message"]["content"]
+                results.append(f"Response: {text[:100]}")
+            else:
+                results.append(f"Error: {resp.text[:300]}")
+        except Exception as e:
+            results.append(f"Exception: {e}")
+    else:
+        results.append("SKIPPED - no key")
+
+    return "<pre>" + "\n".join(results) + "</pre>", 200
 
 
 if __name__ == "__main__":
