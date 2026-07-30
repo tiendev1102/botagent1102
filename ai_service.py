@@ -1,6 +1,7 @@
 import logging
 import requests
 import os
+from datetime import datetime, timezone, timedelta
 from config import GEMINI_API_KEY, OPENROUTER_API_KEY
 
 logger = logging.getLogger(__name__)
@@ -9,15 +10,38 @@ logger = logging.getLogger(__name__)
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
-# System prompt cho bot
-SYSTEM_PROMPT = """Bạn là "Agent của Tiến", một trợ lý AI trên Telegram. Hãy tuân thủ các quy tắc sau:
-1. Xưng hô: Luôn xưng "em", gọi người dùng là "anh".
+# Múi giờ Việt Nam (GMT+7)
+VN_TIMEZONE = timezone(timedelta(hours=7))
+
+# System prompt cơ bản (ngày giờ sẽ được thêm vào mỗi lần gọi)
+BASE_SYSTEM_PROMPT = """Bạn là "Agent của Tiến", một trợ lý AI trên Telegram. Hãy tuân thủ các quy tắc sau:
+1. Xưng hô: Luôn xưng "em", gọi người dùng là "anh Tiến" hoặc "anh".
 2. Phong cách: Cute, thân thiện, nhiệt tình, hỗ trợ tận tình. Dùng emoji phù hợp 😊
 3. Ngôn ngữ: Trả lời bằng tiếng Việt là chính. Nếu anh hỏi bằng ngôn ngữ khác thì trả lời bằng ngôn ngữ đó.
 4. Vai trò: Em là trợ lý đa năng - giúp công việc, học tập, giải trí, tư vấn, dịch thuật, viết lách, lên kế hoạch.
 5. Luôn sẵn sàng và vui vẻ khi được nhờ giúp đỡ.
 6. Trả lời ngắn gọn, dễ hiểu, không dài dòng trừ khi được yêu cầu giải thích chi tiết.
+7. Khi được hỏi về ngày giờ, sử dụng thông tin thời gian thực được cung cấp bên dưới.
+8. Anh Tiến không biết code và không giỏi tiếng Anh, nên giải thích mọi thứ đơn giản, dễ hiểu.
 """
+
+
+def get_system_prompt():
+    """Tạo system prompt với ngày giờ thực tế (múi giờ Việt Nam)"""
+    now = datetime.now(VN_TIMEZONE)
+
+    # Tên ngày trong tuần tiếng Việt
+    weekdays = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
+    weekday_name = weekdays[now.weekday()]
+
+    time_info = f"""
+THÔNG TIN THỜI GIAN THỰC:
+- Ngày hiện tại: {weekday_name}, ngày {now.strftime('%d/%m/%Y')} (dương lịch)
+- Giờ hiện tại: {now.strftime('%H:%M')} (giờ Việt Nam, GMT+7)
+- Năm: {now.year}
+"""
+    return BASE_SYSTEM_PROMPT + time_info
+
 
 # Danh sách model miễn phí trên OpenRouter (thử lần lượt nếu model trước bị rate-limit)
 FREE_MODELS = [
@@ -129,10 +153,11 @@ def call_gemini(user_message, chat_id):
             contents.append({"role": role, "parts": [{"text": msg["content"]}]})
         contents.append({"role": "user", "parts": [{"text": user_message}]})
 
+        system_prompt = get_system_prompt()
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": contents,
-            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
             "generationConfig": {"maxOutputTokens": 1000, "temperature": 0.8}
         }
 
@@ -155,7 +180,8 @@ def call_openrouter(user_message, chat_id):
         return None
 
     history = get_history(chat_id)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    system_prompt = get_system_prompt()
+    messages = [{"role": "system", "content": system_prompt}]
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": user_message})
@@ -214,4 +240,3 @@ def get_ai_response(user_message, chat_id):
     add_to_history(chat_id, "assistant", response)
 
     return response
-
