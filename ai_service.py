@@ -17,14 +17,15 @@ VN_TIMEZONE = timezone(timedelta(hours=7))
 # System prompt cơ bản
 BASE_SYSTEM_PROMPT = """Bạn là "Agent của Tiến", một trợ lý AI trên Telegram. Hãy tuân thủ các quy tắc sau:
 1. Xưng hô: Luôn xưng "em", gọi người dùng là "anh Tiến" hoặc "anh".
-2. Phong cách: Cute, thân thiện, nhiệt tình, hỗ trợ tận tình. Dùng emoji phù hợp 😊
-3. Ngôn ngữ: Trả lời bằng tiếng Việt là chính. Nếu anh hỏi bằng ngôn ngữ khác thì trả lời bằng ngôn ngữ đó.
-4. Vai trò: Em là trợ lý đa năng - giúp công việc, học tập, giải trí, tư vấn, dịch thuật, viết lách, lên kế hoạch.
-5. Luôn sẵn sàng và vui vẻ khi được nhờ giúp đỡ.
-6. Trả lời ngắn gọn, dễ hiểu, không dài dòng trừ khi được yêu cầu giải thích chi tiết.
-7. Khi được hỏi về ngày giờ, sử dụng thông tin thời gian thực được cung cấp bên dưới.
-8. Anh Tiến không biết code và không giỏi tiếng Anh, nên giải thích mọi thứ đơn giản, dễ hiểu.
-9. Nếu có thông tin tìm kiếm từ web (Search Results), hãy sử dụng chúng để trả lời một cách chính xác và cập nhật nhất.
+2. Phong cách: Cute, thân thiện, nhiệt tình nhưng NGẮN GỌN. Dùng emoji vừa phải.
+3. Ngôn ngữ: Trả lời bằng tiếng Việt là chính.
+4. Vai trò: Em là trợ lý đa năng.
+5. QUAN TRỌNG: Trả lời THẲNG VÀO VẤN ĐỀ. KHÔNG vòng vo, KHÔNG hỏi lại khi đã có đủ thông tin.
+6. Nếu có kết quả tìm kiếm web (Search Results), hãy tổng hợp và trả lời NGAY với thông tin cụ thể. KHÔNG nói "em chưa cập nhật" hay "anh cho em thêm thông tin".
+7. Khi trả lời về kết quả thể thao, tin tức: đưa ra CON SỐ CỤ THỂ (tỷ số, ngày, tên cầu thủ...) từ kết quả search.
+8. KHÔNG BAO GIỜ từ chối trả lời khi đã có search results. Dùng thông tin search để trả lời trực tiếp.
+9. Giữ câu trả lời NGẮN (tối đa 3-5 dòng) trừ khi anh yêu cầu chi tiết.
+10. Anh Tiến không biết code và không giỏi tiếng Anh, giải thích đơn giản.
 """
 
 
@@ -120,37 +121,54 @@ def add_to_history(chat_id, role, content):
 
 # --- WEB SEARCH MODULE ---
 
+# Từ khóa trigger search
+SEARCH_KEYWORDS = [
+    "thời tiết", "tin tức", "giá", "tỷ giá", "mới nhất",
+    "bây giờ", "hiện tại", "search", "tìm", "tra cứu", "google",
+    "ai là", "ở đâu", "kết quả", "trận đấu", "bóng đá",
+    "tỷ số", "vàng", "đô la", "usd", "bitcoin", "crypto",
+    "phim", "lịch", "sự kiện", "covid", "dịch", "bão",
+    "xổ số", "loto", "vé số", "stock", "chứng khoán",
+    "mấy độ", "nhiệt độ", "mưa", "nắng", "score"
+]
+
+
 def should_search(text):
-    """Phân loại xem tin nhắn có cần search web không dựa trên keyword"""
-    keywords = [
-        "thời tiết", "tin tức", "giá", "tỷ giá", "mới nhất", "hôm nay", 
-        "bây giờ", "hiện tại", "search", "tìm", "tra cứu", "google",
-        "thế nào", "ai là", "ở đâu", "mấy giờ", "kết quả", "trận đấu"
-    ]
+    """Phân loại xem tin nhắn có cần search web không"""
     text_lower = text.lower()
-    return any(kw in text_lower for kw in keywords)
+    return any(kw in text_lower for kw in SEARCH_KEYWORDS)
 
 
 def web_search_ddg(query, max_results=5):
-    """Tìm kiếm bằng DuckDuckGo (Miễn phí, không cần API key)"""
+    """Tìm kiếm bằng DuckDuckGo - ưu tiên news search cho kết quả mới nhất"""
     try:
-        logger.info(f"Searching DuckDuckGo for: {query}")
+        logger.info(f"Searching DuckDuckGo news for: {query}")
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-            if not results:
-                return None
+            # Thử news search trước (kết quả mới nhất)
+            results = list(ddgs.news(query, max_results=max_results))
+            if results:
+                formatted = []
+                for r in results:
+                    formatted.append(f"- {r['title']}: {r['body']}")
+                return "\n".join(formatted)
             
-            formatted_results = []
-            for r in results:
-                formatted_results.append(f"- {r['title']}: {r['body']} (Nguồn: {r['href']})")
-            return "\n".join(formatted_results)
+            # Nếu news không có, thử text search
+            logger.info("No news results, trying text search...")
+            results = list(ddgs.text(query, max_results=max_results))
+            if results:
+                formatted = []
+                for r in results:
+                    formatted.append(f"- {r['title']}: {r['body']}")
+                return "\n".join(formatted)
+            
+            return None
     except Exception as e:
         logger.error(f"DuckDuckGo search error: {e}")
         return None
 
 
 def web_search_tavily(query):
-    """Tìm kiếm bằng Tavily (Dự phòng, cần API key)"""
+    """Tìm kiếm bằng Tavily (Dự phòng)"""
     if not TAVILY_API_KEY:
         return None
     try:
@@ -168,11 +186,10 @@ def web_search_tavily(query):
             results = data.get("results", [])
             if not results:
                 return None
-            
-            formatted_results = []
+            formatted = []
             for r in results:
-                formatted_results.append(f"- {r['title']}: {r['content']} (Nguồn: {r['url']})")
-            return "\n".join(formatted_results)
+                formatted.append(f"- {r['title']}: {r['content']}")
+            return "\n".join(formatted)
         return None
     except Exception as e:
         logger.error(f"Tavily search error: {e}")
@@ -180,14 +197,20 @@ def web_search_tavily(query):
 
 
 def perform_search(query):
-    """Thực hiện tìm kiếm, thử DDG trước, sau đó là Tavily"""
-    # Thử DuckDuckGo
+    """Thực hiện tìm kiếm - thử nhiều cách"""
+    # Thử search bằng tiếng Việt trước
     results = web_search_ddg(query)
     
-    # Nếu DDG fail, thử Tavily
+    # Nếu không có kết quả, thử search bằng tiếng Anh (dịch đơn giản)
+    if not results:
+        # Thử thêm "Vietnam" vào query tiếng Anh
+        english_query = query.replace("việt nam", "Vietnam").replace("Việt Nam", "Vietnam")
+        results = web_search_ddg(english_query)
+    
+    # Cuối cùng thử Tavily
     if not results:
         results = web_search_tavily(query)
-        
+    
     return results
 
 
@@ -203,10 +226,9 @@ def call_gemini(user_message, chat_id, search_context=None):
             role = "user" if msg["role"] == "user" else "model"
             contents.append({"role": role, "parts": [{"text": msg["content"]}]})
         
-        # Nếu có kết quả search, thêm vào tin nhắn cuối của user
         final_message = user_message
         if search_context:
-            final_message = f"Dưới đây là kết quả tìm kiếm từ internet cho câu hỏi của anh:\n\n{search_context}\n\nDựa vào thông tin trên, hãy trả lời câu hỏi: {user_message}"
+            final_message = f"[KẾT QUẢ TÌM KIẾM WEB - HÃY DÙNG THÔNG TIN NÀY ĐỂ TRẢ LỜI TRỰC TIẾP]:\n{search_context}\n\n[CÂU HỎI CỦA ANH TIẾN]: {user_message}\n\n[YÊU CẦU]: Trả lời THẲNG với thông tin cụ thể từ kết quả search. KHÔNG hỏi lại. KHÔNG nói 'em chưa cập nhật'."
             
         contents.append({"role": "user", "parts": [{"text": final_message}]})
         
@@ -215,7 +237,7 @@ def call_gemini(user_message, chat_id, search_context=None):
         payload = {
             "contents": contents,
             "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "generationConfig": {"maxOutputTokens": 1000, "temperature": 0.8}
+            "generationConfig": {"maxOutputTokens": 1000, "temperature": 0.7}
         }
         response = requests.post(url, json=payload, timeout=15)
         if response.status_code == 200:
@@ -238,10 +260,9 @@ def call_openrouter(user_message, chat_id, search_context=None):
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
     
-    # Thêm context search
     final_message = user_message
     if search_context:
-        final_message = f"Dưới đây là kết quả tìm kiếm từ internet cho câu hỏi của anh:\n\n{search_context}\n\nDựa vào thông tin trên, hãy trả lời câu hỏi: {user_message}"
+        final_message = f"[KẾT QUẢ TÌM KIẾM WEB - HÃY DÙNG THÔNG TIN NÀY ĐỂ TRẢ LỜI TRỰC TIẾP]:\n{search_context}\n\n[CÂU HỎI CỦA ANH TIẾN]: {user_message}\n\n[YÊU CẦU]: Trả lời THẲNG với thông tin cụ thể từ kết quả search. KHÔNG hỏi lại. KHÔNG nói 'em chưa cập nhật'."
         
     messages.append({"role": "user", "content": final_message})
     
@@ -276,7 +297,12 @@ def get_ai_response(user_message, chat_id):
     # 1. Kiểm tra xem có cần search web không
     search_context = None
     if should_search(user_message):
+        logger.info(f"Search triggered for: {user_message}")
         search_context = perform_search(user_message)
+        if search_context:
+            logger.info(f"Search results found: {len(search_context)} chars")
+        else:
+            logger.info("No search results found")
     
     # 2. Gọi AI (Gemini trước, OpenRouter sau)
     response = call_gemini(user_message, chat_id, search_context)
@@ -287,7 +313,7 @@ def get_ai_response(user_message, chat_id):
     if response is None:
         response = "Dạ, em xin lỗi anh 😅 Hiện tại tất cả nguồn AI đều đang gặp trục trặc. Anh thử lại sau vài phút nha! 🙏"
     
-    # 3. Lưu lịch sử (Lưu tin nhắn gốc của user, không lưu context search để tiết kiệm dung lượng)
+    # 3. Lưu lịch sử (chỉ lưu tin nhắn gốc, không lưu search context)
     add_to_history(chat_id, "user", user_message)
     add_to_history(chat_id, "assistant", response)
     
