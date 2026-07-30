@@ -1,8 +1,13 @@
 import logging
 import requests
+import os
 from config import GEMINI_API_KEY, OPENROUTER_API_KEY
 
 logger = logging.getLogger(__name__)
+
+# Supabase config
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 # System prompt cho bot
 SYSTEM_PROMPT = """Bạn là "Agent của Tiến", một trợ lý AI trên Telegram. Hãy tuân thủ các quy tắc sau:
@@ -22,25 +27,94 @@ FREE_MODELS = [
     "nvidia/nemotron-3-nano-30b-a3b:free",
 ]
 
-# Lưu lịch sử hội thoại (trong RAM)
+# Lưu lịch sử hội thoại trong RAM (backup khi không có Supabase)
 conversation_history = {}
 MAX_HISTORY = 20
 
 
+# ==================== LỊCH SỬ HỘI THOẠI ====================
+
+def load_history_from_supabase(chat_id):
+    """Tải lịch sử hội thoại từ Supabase"""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None  # Không có Supabase, dùng RAM
+
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/chat_history"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+        params = {
+            "chat_id": f"eq.{chat_id}",
+            "order": "created_at.desc",
+            "limit": str(MAX_HISTORY)
+        }
+        response = requests.get(url, headers=headers, params=params, timeout=5)
+
+        if response.status_code == 200:
+            rows = response.json()
+            rows.reverse()  # Đảo ngược: cũ -> mới
+            return [{"role": row["role"], "content": row["content"]} for row in rows]
+        else:
+            logger.error(f"Supabase load error: {response.status_code} - {response.text[:100]}")
+            return None
+    except Exception as e:
+        logger.error(f"Supabase load error: {e}")
+        return None
+
+
+def save_to_supabase(chat_id, role, content):
+    """Lưu tin nhắn vào Supabase"""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return  # Không có Supabase, bỏ qua
+
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/chat_history"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal"
+        }
+        data = {
+            "chat_id": str(chat_id),
+            "role": role,
+            "content": content
+        }
+        requests.post(url, headers=headers, json=data, timeout=5)
+    except Exception as e:
+        logger.error(f"Supabase save error: {e}")
+
+
 def get_history(chat_id):
-    """Lấy lịch sử hội thoại của một chat"""
+    """Lấy lịch sử hội thoại - ưu tiên Supabase, fallback RAM"""
+    # Thử lấy từ Supabase trước
+    history = load_history_from_supabase(chat_id)
+    if history is not None:
+        return history
+
+    # Fallback: dùng RAM
     if chat_id not in conversation_history:
         conversation_history[chat_id] = []
     return conversation_history[chat_id]
 
 
 def add_to_history(chat_id, role, content):
-    """Thêm tin nhắn vào lịch sử"""
-    history = get_history(chat_id)
-    history.append({"role": role, "content": content})
-    if len(history) > MAX_HISTORY:
-        conversation_history[chat_id] = history[-MAX_HISTORY:]
+    """Lưu tin nhắn vào lịch sử (cả Supabase và RAM)"""
+    # Lưu vào Supabase
+    save_to_supabase(chat_id, role, content)
 
+    # Lưu vào RAM (backup)
+    if chat_id not in conversation_history:
+        conversation_history[chat_id] = []
+    conversation_history[chat_id].append({"role": role, "content": content})
+    if len(conversation_history[chat_id]) > MAX_HISTORY:
+        conversation_history[chat_id] = conversation_history[chat_id][-MAX_HISTORY:]
+
+
+# ==================== GỌI AI API ====================
 
 def call_gemini(user_message, chat_id):
     """Gọi Google Gemini API"""
@@ -119,6 +193,8 @@ def call_openrouter(user_message, chat_id):
     return None
 
 
+# ==================== HÀM CHÍNH ====================
+
 def get_ai_response(user_message, chat_id):
     """Lấy phản hồi AI - thử Gemini trước, nếu lỗi thì dùng OpenRouter với nhiều model"""
     # Thử Gemini trước
@@ -133,8 +209,9 @@ def get_ai_response(user_message, chat_id):
     if response is None:
         response = "Dạ, em xin lỗi anh 😅 Hiện tại tất cả nguồn AI đều đang gặp trục trặc. Anh thử lại sau vài phút nha! 🙏"
 
-    # Lưu vào lịch sử
+    # Lưu vào lịch sử (cả Supabase và RAM)
     add_to_history(chat_id, "user", user_message)
     add_to_history(chat_id, "assistant", response)
 
     return response
+
