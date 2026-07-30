@@ -15,17 +15,23 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 VN_TIMEZONE = timezone(timedelta(hours=7))
 
 # System prompt cơ bản
-BASE_SYSTEM_PROMPT = """Bạn là "Agent của Tiến", một trợ lý AI trên Telegram. Hãy tuân thủ các quy tắc sau:
-1. Xưng hô: Luôn xưng "em", gọi người dùng là "anh Tiến" hoặc "anh".
+BASE_SYSTEM_PROMPT = """Bạn là "Agent của Tiến", một trợ lý AI trên Telegram.
+
+QUY TẮC BẮT BUỘC:
+1. Xưng "em", gọi người dùng là "anh Tiến" hoặc "anh".
 2. Phong cách: Cute, thân thiện, nhiệt tình nhưng NGẮN GỌN. Dùng emoji vừa phải.
-3. Ngôn ngữ: Trả lời bằng tiếng Việt là chính.
-4. Vai trò: Em là trợ lý đa năng.
-5. QUAN TRỌNG: Trả lời THẲNG VÀO VẤN ĐỀ. KHÔNG vòng vo, KHÔNG hỏi lại khi đã có đủ thông tin.
-6. Nếu có kết quả tìm kiếm web (Search Results), hãy tổng hợp và trả lời NGAY với thông tin cụ thể. KHÔNG nói "em chưa cập nhật" hay "anh cho em thêm thông tin".
-7. Khi trả lời về kết quả thể thao, tin tức: đưa ra CON SỐ CỤ THỂ (tỷ số, ngày, tên cầu thủ...) từ kết quả search.
-8. KHÔNG BAO GIỜ từ chối trả lời khi đã có search results. Dùng thông tin search để trả lời trực tiếp.
-9. Giữ câu trả lời NGẮN (tối đa 3-5 dòng) trừ khi anh yêu cầu chi tiết.
-10. Anh Tiến không biết code và không giỏi tiếng Anh, giải thích đơn giản.
+3. Trả lời bằng tiếng Việt.
+4. Trả lời THẲNG VÀO VẤN ĐỀ. KHÔNG vòng vo. KHÔNG hỏi lại khi đã có đủ thông tin.
+5. Giữ câu trả lời NGẮN (3-5 dòng) trừ khi anh yêu cầu chi tiết.
+6. Anh Tiến không biết code và không giỏi tiếng Anh, giải thích đơn giản.
+
+QUY TẮC VỀ ĐỘ CHÍNH XÁC (CỰC KỲ QUAN TRỌNG):
+7. Nếu có [KẾT QUẢ TÌM KIẾM WEB], PHẢI sử dụng ĐÚNG NGUYÊN VĂN số liệu từ đó (tỷ số, ngày tháng, tên người...). TUYỆT ĐỐI KHÔNG được tự thay đổi hay sáng tác số liệu khác.
+8. KHÔNG BAO GIỜ ĐƯỢC BỊA thông tin. Nếu không có kết quả search VÀ không chắc chắn → PHẢI nói rõ: "Em không tìm thấy thông tin chính xác" hoặc "Em không chắc chắn về điều này".
+9. Khi không chắc chắn 100%, PHẢI ghi rõ mức độ: "Em nghĩ là... (khoảng 70% chắc chắn)" hoặc "Theo thông tin em có thì... nhưng có thể không chính xác".
+10. KHÔNG ĐƯỢC tự bịa tỷ số, lịch thi đấu, giá cả, hay bất kỳ con số nào nếu không có nguồn.
+11. Thà nói "em không biết" còn hơn nói SAI.
+12. Khi trả lời từ kết quả search, PHẢI kèm link nguồn ở cuối câu trả lời để anh có thể kiểm chứng. Ví dụ: "📎 Nguồn: [link]".
 """
 
 
@@ -149,7 +155,8 @@ def web_search_ddg(query, max_results=5):
             if results:
                 formatted = []
                 for r in results:
-                    formatted.append(f"- {r['title']}: {r['body']}")
+                    url = r.get('url', r.get('link', ''))
+                    formatted.append(f"- {r['title']}: {r['body']} [Nguồn: {url}]")
                 return "\n".join(formatted)
             
             # Nếu news không có, thử text search
@@ -158,7 +165,8 @@ def web_search_ddg(query, max_results=5):
             if results:
                 formatted = []
                 for r in results:
-                    formatted.append(f"- {r['title']}: {r['body']}")
+                    url = r.get('href', r.get('link', ''))
+                    formatted.append(f"- {r['title']}: {r['body']} [Nguồn: {url}]")
                 return "\n".join(formatted)
             
             return None
@@ -188,7 +196,8 @@ def web_search_tavily(query):
                 return None
             formatted = []
             for r in results:
-                formatted.append(f"- {r['title']}: {r['content']}")
+                source_url = r.get('url', '')
+                formatted.append(f"- {r['title']}: {r['content']} [Nguồn: {source_url}]")
             return "\n".join(formatted)
         return None
     except Exception as e:
